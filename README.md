@@ -8,11 +8,16 @@
 
 ```
 neural-dockyard/
-└── megatron/         # Megatron-LM 分布式训练框架学习
-    ├── megatron_hello_world.py   # AI Infra 核心概念演示
-    ├── Dockerfile                # PyTorch 容器化
-    ├── k8s-job.yaml              # K8s Job 部署
-    └── 步骤文档.md                # 完整部署步骤记录
+├── 步骤文档.md
+└── megatron/
+    ├── standalone/          # 单机运行 (K8s Job, 单 Pod)
+    │   ├── megatron_hello_world.py   # 7 个 AI Infra 核心概念演示
+    │   ├── Dockerfile
+    │   └── k8s-job.yaml
+    └── distributed/         # 分布式训练 (4 Pod DP)
+        ├── dp_distributed_training.py  # 数据并行 + all-reduce
+        ├── Dockerfile
+        └── k8s-dp-distributed.yaml     # Headless Service + StatefulSet
 ```
 
 ## 🎯 学习路线

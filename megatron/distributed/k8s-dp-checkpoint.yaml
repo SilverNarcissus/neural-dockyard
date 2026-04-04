@@ -1,0 +1,139 @@
+# ============================================================
+# Megatron DP + Checkpoint 分布式训练
+# ============================================================
+# 架构:
+#   Azure File Share ← 所有 Pod 共享挂载 /checkpoints
+#   Headless Service → StatefulSet (4 pods)
+#   每个 rank 保存/加载自己的 optimizer shard
+#   rank 0 额外保存模型参数 + metadata
+# ============================================================
+
+---
+# PersistentVolume: 绑定 Azure File Share
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: checkpoint-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+  - ReadWriteMany                 # 多 Pod 同时读写!
+  azureFile:
+    secretName: azure-storage-secret
+    shareName: checkpoints
+    readOnly: false
+  storageClassName: ""
+  claimRef:
+    name: checkpoint-pvc
+    namespace: default
+
+---
+# PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: checkpoint-pvc
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: ""
+  volumeName: checkpoint-pv
+
+---
+# Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: megatron-ckpt-svc
+  labels:
+    app: megatron-ckpt
+spec:
+  clusterIP: None
+  selector:
+    app: megatron-ckpt
+  ports:
+  - port: 29500
+    name: torchrun
+
+---
+# StatefulSet: 4 workers with shared checkpoint volume
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: megatron-ckpt-worker
+  labels:
+    app: megatron-ckpt
+spec:
+  serviceName: megatron-ckpt-svc
+  replicas: 4
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: megatron-ckpt
+  template:
+    metadata:
+      labels:
+        app: megatron-ckpt
+    spec:
+      containers:
+      - name: trainer
+        image: megatronacr0404.azurecr.io/megatron-hello-world:v3
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        ports:
+        - containerPort: 29500
+          name: torchrun
+        env:
+        - name: MASTER_ADDR
+          value: "megatron-ckpt-worker-0.megatron-ckpt-svc"
+        - name: MASTER_PORT
+          value: "29500"
+        - name: WORLD_SIZE
+          value: "4"
+        - name: CHECKPOINT_DIR
+          value: "/checkpoints"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        # 挂载共享存储
+        volumeMounts:
+        - name: checkpoint-storage
+          mountPath: /checkpoints
+        command:
+        - /bin/bash
+        - -c
+        - |
+          export RANK=${POD_NAME##*-}
+          export LOCAL_RANK=0
+          echo "=== Pod ${POD_NAME}: RANK=${RANK}, CHECKPOINT_DIR=${CHECKPOINT_DIR} ==="
+
+          # 等待 master DNS
+          for i in $(seq 1 60); do
+            if getent hosts ${MASTER_ADDR} > /dev/null 2>&1; then
+              echo "Master DNS resolved!"
+              break
+            fi
+            echo "Waiting for master DNS... ($i/60)"
+            sleep 1
+          done
+
+          # 列出已有 checkpoint (如果是恢复场景)
+          echo "=== 现有 Checkpoint ==="
+          ls -la /checkpoints/ 2>/dev/null || echo "(空)"
+
+          # 启动训练
+          python dp_checkpoint_training.py
+      volumes:
+      - name: checkpoint-storage
+        persistentVolumeClaim:
+          claimName: checkpoint-pvc

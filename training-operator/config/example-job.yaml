@@ -1,0 +1,59 @@
+# ============================================================
+# 示例: 提交一个分布式训练任务
+# ============================================================
+# 用户只需写这个 YAML，Operator 自动完成:
+#   1. 创建 Headless Service (Pod 互相发现)
+#   2. 创建 StatefulSet (4 个 Worker Pod)
+#   3. 注入 MASTER_ADDR, RANK, WORLD_SIZE 等环境变量
+#   4. 挂载 Checkpoint 共享存储
+#   5. 监控训练状态
+#
+# 对比手写 k8s-dp-checkpoint.yaml:
+#   手写: 需要自己写 Service + StatefulSet + 环境变量 (~140行)
+#   Operator: 只写这 20 行，剩下全自动!
+# ============================================================
+
+apiVersion: training.megatron.io/v1
+kind: TrainingJob
+metadata:
+  name: megatron-dp-demo
+spec:
+  # 训练镜像
+  image: megatronacr0404.azurecr.io/megatron-hello-world:v3
+
+  # 4 个 Worker (RANK 0~3)
+  workers: 4
+
+  # 训练启动命令
+  command: ["python"]
+  args: ["dp_checkpoint_training.py"]
+
+  # Checkpoint 共享存储
+  checkpointPVC: checkpoint-pvc
+
+  # 资源配置 (每个 Worker)
+  resources:
+    cpuRequest: "250m"
+    cpuLimit: "500m"
+    memoryRequest: "512Mi"
+    memoryLimit: "1Gi"
+
+# ============================================================
+# 使用方式:
+#
+#   # 1. 注册 CRD
+#   kubectl apply -f config/crd.yaml
+#
+#   # 2. 启动 Operator (开发模式)
+#   go run main.go
+#
+#   # 3. 提交训练任务
+#   kubectl apply -f config/example-job.yaml
+#
+#   # 4. 查看状态
+#   kubectl get tj                    # 列表
+#   kubectl describe tj megatron-dp-demo  # 详情
+#
+#   # 5. 删除任务 (自动清理所有子资源)
+#   kubectl delete tj megatron-dp-demo
+# ============================================================

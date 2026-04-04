@@ -1,0 +1,110 @@
+# ============================================================
+# TrainingJob CRD (Custom Resource Definition)
+# ============================================================
+# 向 K8s 注册 TrainingJob 这个新资源类型
+# 注册后用户就可以: kubectl apply -f my-training-job.yaml
+#
+# 对应 JD: "参与AI平台本身各项功能以及用户训练任务"
+# ============================================================
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: trainingjobs.training.megatron.io
+spec:
+  group: training.megatron.io
+  names:
+    kind: TrainingJob
+    listKind: TrainingJobList
+    plural: trainingjobs
+    singular: trainingjob
+    shortNames:
+    - tj                            # kubectl get tj
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required: [image, workers, command]
+            properties:
+              image:
+                type: string
+                description: "训练镜像地址"
+              workers:
+                type: integer
+                minimum: 1
+                maximum: 256
+                description: "Worker 数量 (= world_size)"
+              command:
+                type: array
+                items:
+                  type: string
+                description: "启动命令"
+              args:
+                type: array
+                items:
+                  type: string
+                description: "命令参数"
+              gpusPerWorker:
+                type: integer
+                minimum: 0
+                maximum: 8
+                description: "每个 Worker 的 GPU 数"
+              masterPort:
+                type: integer
+                default: 29500
+                description: "PyTorch rendezvous 端口"
+              checkpointPVC:
+                type: string
+                description: "Checkpoint PVC 名称"
+              resources:
+                type: object
+                properties:
+                  cpuRequest:
+                    type: string
+                  cpuLimit:
+                    type: string
+                  memoryRequest:
+                    type: string
+                  memoryLimit:
+                    type: string
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: [Pending, Creating, Running, Succeeded, Failed]
+              readyWorkers:
+                type: integer
+              startTime:
+                type: string
+                format: date-time
+              completionTime:
+                type: string
+                format: date-time
+              message:
+                type: string
+    subresources:
+      status: {}                    # 启用 /status 子资源端点
+    additionalPrinterColumns:       # kubectl get tj 时显示的列
+    - name: Workers
+      type: integer
+      jsonPath: .spec.workers
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Ready
+      type: integer
+      jsonPath: .status.readyWorkers
+    - name: Message
+      type: string
+      jsonPath: .status.message
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp

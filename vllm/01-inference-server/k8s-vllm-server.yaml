@@ -1,0 +1,139 @@
+# ============================================================
+# vLLM 推理服务 K8s 部署
+# ============================================================
+# 架构:
+#   Deployment (1 Pod) → vLLM Server (OpenAI API)
+#   Service (ClusterIP) → 集群内访问
+#   Test Job → curl 发送推理请求
+# ============================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+  labels:
+    app: vllm-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-server
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+    spec:
+      nodeSelector:
+        agentpool: bigpool
+      containers:
+      - name: inference
+        image: megatronacr0404.azurecr.io/vllm-server:v6
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  labels:
+    app: vllm-server
+spec:
+  selector:
+    app: vllm-server
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  type: ClusterIP
+
+---
+# 测试 Job: 向 vLLM 发送推理请求
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vllm-test-client
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+      - name: client
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== vLLM 推理测试 ==="
+          echo ""
+
+          # 等待 vLLM 服务就绪
+          echo "等待 vLLM 服务启动..."
+          for i in $(seq 1 120); do
+            if curl -s http://vllm-service:8000/health > /dev/null 2>&1; then
+              echo "vLLM 服务已就绪! (等待了 ${i} 秒)"
+              break
+            fi
+            sleep 1
+          done
+
+          echo ""
+          echo "=== 1. 查看可用模型 (GET /v1/models) ==="
+          curl -s http://vllm-service:8000/v1/models | head -c 500
+          echo ""
+          echo ""
+
+          echo "=== 2. 文本补全 (POST /v1/completions) ==="
+          echo "Prompt: 'The future of artificial intelligence is'"
+          curl -s http://vllm-service:8000/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "facebook/opt-125m",
+              "prompt": "The future of artificial intelligence is",
+              "max_tokens": 50,
+              "temperature": 0.7
+            }'
+          echo ""
+          echo ""
+
+          echo "=== 3. 多请求并发 (模拟 Continuous Batching) ==="
+          echo "同时发送 3 个请求..."
+
+          curl -s http://vllm-service:8000/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"facebook/opt-125m","prompt":"Hello, my name is","max_tokens":20}' &
+
+          curl -s http://vllm-service:8000/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"facebook/opt-125m","prompt":"The capital of France is","max_tokens":20}' &
+
+          curl -s http://vllm-service:8000/v1/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"facebook/opt-125m","prompt":"Machine learning is a subset of","max_tokens":20}' &
+
+          wait
+          echo ""
+          echo ""
+          echo "=== ✅ vLLM 推理测试完成! ==="
+      restartPolicy: Never

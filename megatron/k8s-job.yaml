@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
       - name: megatron
-        image: megatronacr0404.azurecr.io/megatron-hello-world:v1
+        image: megatronacr0404.azurecr.io/megatron-hello-world:040401
         resources:
           requests:
             cpu: "250m"

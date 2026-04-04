@@ -1,0 +1,83 @@
+# ============================================================
+# Operator 部署全家桶: RBAC + Deployment
+# ============================================================
+# Operator 本身也是一个 Pod，运行在 K8s 里
+# 它需要权限去: 监听 CRD、创建/删除 StatefulSet
+# ============================================================
+
+---
+# 1. ServiceAccount — Operator 的身份
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: training-operator
+  namespace: default
+
+---
+# 2. ClusterRole — Operator 需要的权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: training-operator
+rules:
+# 监听自定义 CRD
+- apiGroups: ["training.megatron.io"]
+  resources: ["trainingjobs"]
+  verbs: ["get", "list", "watch", "delete"]
+# 创建/删除 StatefulSet
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list", "create", "delete"]
+# 创建/删除 Service
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "create", "delete"]
+# 查看 Pod 状态 (检测训练完成)
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+# 3. ClusterRoleBinding — 把权限绑到 ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: training-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: training-operator
+subjects:
+- kind: ServiceAccount
+  name: training-operator
+  namespace: default
+
+---
+# 4. Deployment — 运行 Operator 本身
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training-operator
+  namespace: default
+spec:
+  replicas: 1              # Operator 只需要 1 个副本
+  selector:
+    matchLabels:
+      app: training-operator
+  template:
+    metadata:
+      labels:
+        app: training-operator
+    spec:
+      serviceAccountName: training-operator    # 用上面的 SA，获得 RBAC 权限
+      containers:
+      - name: operator
+        image: megatronacr0404.azurecr.io/operator:v1
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"

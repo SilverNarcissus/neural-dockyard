@@ -10,14 +10,19 @@
 neural-dockyard/
 ├── 步骤文档.md
 └── megatron/
-    ├── standalone/          # 单机运行 (K8s Job, 单 Pod)
-    │   ├── megatron_hello_world.py   # 7 个 AI Infra 核心概念演示
+    ├── standalone/                        # 单机运行
+    │   ├── megatron_hello_world.py
     │   ├── Dockerfile
     │   └── k8s-job.yaml
-    └── distributed/         # 分布式训练 (4 Pod DP)
-        ├── dp_distributed_training.py  # 数据并行 + all-reduce
-        ├── Dockerfile
-        └── k8s-dp-distributed.yaml     # Headless Service + StatefulSet
+    └── distributed/                       # 分布式训练
+        ├── 01-data-parallel/              # DP 数据并行
+        │   ├── dp_distributed_training.py
+        │   ├── Dockerfile
+        │   └── k8s-dp-distributed.yaml
+        └── 02-dp-checkpoint/              # DP + 分布式 Checkpoint
+            ├── dp_checkpoint_training.py
+            ├── Dockerfile
+            └── k8s-dp-checkpoint.yaml
 ```
 
 ## 🎯 学习路线

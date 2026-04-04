@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: megatron-hello-world
+  labels:
+    app: megatron-practice
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: megatron-hello-world
+    spec:
+      containers:
+      - name: megatron
+        image: megatronacr0404.azurecr.io/megatron-hello-world:v1
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        env:
+        - name: WORLD_SIZE
+          value: "1"
+        - name: RANK
+          value: "0"
+      restartPolicy: Never

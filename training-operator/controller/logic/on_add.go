@@ -65,18 +65,22 @@ func OnAdd(ctx context.Context, kubeClient kubernetes.Interface, u *unstructured
 	checkpointPVC, _, _ := unstructured.NestedString(u.Object, "spec", "checkpointPVC")
 
 	// 构建容器
+	// Checkpoint 路径: /checkpoints/{job-name}，每个任务隔离
+	checkpointPath := "/checkpoints/" + name
+
 	container := corev1.Container{
 		Name:  "trainer",
 		Image: image,
 		Command: []string{"/bin/bash", "-c",
-			"export RANK=${POD_NAME##*-} && export LOCAL_RANK=0 && exec " +
+			"mkdir -p " + checkpointPath + " && " +
+				"export RANK=${POD_NAME##*-} && export LOCAL_RANK=0 && exec " +
 				joinStrings(command) + " " + joinStrings(args),
 		},
 		Env: []corev1.EnvVar{
 			{Name: "WORLD_SIZE", Value: fmt.Sprintf("%d", workers)},
 			{Name: "MASTER_ADDR", Value: fmt.Sprintf("%s-0.%s-svc", stsName, name)},
 			{Name: "MASTER_PORT", Value: "29500"},
-			{Name: "CHECKPOINT_DIR", Value: "/checkpoints"},
+			{Name: "CHECKPOINT_DIR", Value: checkpointPath},
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			}},

@@ -81,8 +81,7 @@ func checkAllJobs(ctx context.Context, kubeClient kubernetes.Interface, dynamicC
 			completed := false
 			for _, cs := range pod.Status.ContainerStatuses {
 				// 容器上次退出码为 0 = 训练正常完成
-				if cs.LastTerminationReason == "Completed" ||
-					(cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.ExitCode == 0) {
+				if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.ExitCode == 0 {
 					completed = true
 					break
 				}
@@ -102,7 +101,7 @@ func checkAllJobs(ctx context.Context, kubeClient kubernetes.Interface, dynamicC
 		log.Printf("🎉 训练任务完成: %s\n", name)
 		log.Printf("   Workers: %d, 全部 Succeeded\n", len(pods.Items))
 		if checkpointPVC != "" {
-			log.Printf("   📁 Checkpoint 存储: PVC=%s, 路径=/checkpoints/\n", checkpointPVC)
+			log.Printf("   📁 Checkpoint 存储: PVC=%s, 路径=/checkpoints/%s/\n", checkpointPVC, name)
 		}
 		log.Println("============================================================")
 

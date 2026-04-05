@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 
+	"training-operator/controller/pipeline"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -14,7 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// OnAdd 用户创建了一个 TrainingJob → 创建 Headless Service + StatefulSet
+// OnAdd 用户创建了一个 TrainingJob → 用 Pipeline 链式创建子资源
 func OnAdd(ctx context.Context, kubeClient kubernetes.Interface, u *unstructured.Unstructured) {
 	name := u.GetName()
 	namespace := u.GetNamespace()
@@ -24,50 +26,65 @@ func OnAdd(ctx context.Context, kubeClient kubernetes.Interface, u *unstructured
 	workers, _, _ := unstructured.NestedInt64(u.Object, "spec", "workers")
 	command, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "command")
 	args, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "args")
+	checkpointPVC, _, _ := unstructured.NestedString(u.Object, "spec", "checkpointPVC")
 
 	log.Printf("   image=%s, workers=%d, command=%v\n", image, workers, command)
 
-	svcName := name + "-svc"
-	stsName := name + "-worker"
+	// 用 Pipeline 链式执行，任意一步失败自动停止
+	pipeline.New("create-"+name).
+		Step("create-headless-service", func() error {
+			return ensureService(ctx, kubeClient, namespace, name)
+		}).
+		Step("create-statefulset", func() error {
+			return ensureStatefulSet(ctx, kubeClient, namespace, name, image, int32(workers), command, args, checkpointPVC)
+		}).
+		OnError(func(stepName string, err error) {
+			log.Printf("⚠️  任务 %s 创建中断，已完成的资源需要清理\n", name)
+		}).
+		Run()
+}
 
-	// --- Step 1: 创建 Headless Service (Pod 间 DNS 互相发现) ---
+// ensureService 确保 Headless Service 存在 (幂等)
+func ensureService(ctx context.Context, kubeClient kubernetes.Interface, namespace, jobName string) error {
+	svcName := jobName + "-svc"
+
 	_, err := kubeClient.CoreV1().Services(namespace).Get(ctx, svcName, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
-		svc := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: namespace},
-			Spec: corev1.ServiceSpec{
-				ClusterIP: "None",
-				Selector:  map[string]string{"job": name},
-				Ports: []corev1.ServicePort{{
-					Port: 29500, TargetPort: intstr.FromInt(29500), Name: "torchrun",
-				}},
-			},
-		}
-		if _, err := kubeClient.CoreV1().Services(namespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
-			log.Printf("❌ 创建 Service 失败: %v\n", err)
-			return
-		}
-		log.Printf("✅ 创建 Headless Service: %s\n", svcName)
+	if err == nil {
+		log.Printf("   Service %s 已存在，跳过\n", svcName)
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("查询 Service 失败: %w", err)
 	}
 
-	// --- Step 2: 创建 StatefulSet ---
-	_, stsErr := kubeClient.AppsV1().StatefulSets(namespace).Get(ctx, stsName, metav1.GetOptions{})
-	if stsErr == nil {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "None",
+			Selector:  map[string]string{"job": jobName},
+			Ports: []corev1.ServicePort{{
+				Port: 29500, TargetPort: intstr.FromInt(29500), Name: "torchrun",
+			}},
+		},
+	}
+	_, err = kubeClient.CoreV1().Services(namespace).Create(ctx, svc, metav1.CreateOptions{})
+	return err
+}
+
+// ensureStatefulSet 确保 StatefulSet 存在 (幂等)
+func ensureStatefulSet(ctx context.Context, kubeClient kubernetes.Interface, namespace, jobName, image string, workers int32, command, args []string, checkpointPVC string) error {
+	stsName := jobName + "-worker"
+
+	_, err := kubeClient.AppsV1().StatefulSets(namespace).Get(ctx, stsName, metav1.GetOptions{})
+	if err == nil {
 		log.Printf("   StatefulSet %s 已存在，跳过\n", stsName)
-		return
+		return nil
 	}
-	if !errors.IsNotFound(stsErr) {
-		log.Printf("❌ 查询失败: %v\n", stsErr)
-		return
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("查询 StatefulSet 失败: %w", err)
 	}
 
-	// 读取 checkpointPVC
-	checkpointPVC, _, _ := unstructured.NestedString(u.Object, "spec", "checkpointPVC")
-
-	// 构建容器
-	// Checkpoint 路径: /checkpoints/{job-name}，每个任务隔离
-	checkpointPath := "/checkpoints/" + name
-
+	checkpointPath := "/checkpoints/" + jobName
 	container := corev1.Container{
 		Name:  "trainer",
 		Image: image,
@@ -78,7 +95,7 @@ func OnAdd(ctx context.Context, kubeClient kubernetes.Interface, u *unstructured
 		},
 		Env: []corev1.EnvVar{
 			{Name: "WORLD_SIZE", Value: fmt.Sprintf("%d", workers)},
-			{Name: "MASTER_ADDR", Value: fmt.Sprintf("%s-0.%s-svc", stsName, name)},
+			{Name: "MASTER_ADDR", Value: fmt.Sprintf("%s-0.%s-svc", stsName, jobName)},
 			{Name: "MASTER_PORT", Value: "29500"},
 			{Name: "CHECKPOINT_DIR", Value: checkpointPath},
 			{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
@@ -87,7 +104,6 @@ func OnAdd(ctx context.Context, kubeClient kubernetes.Interface, u *unstructured
 		},
 	}
 
-	// 如果指定了 PVC，挂载到 /checkpoints
 	var volumes []corev1.Volume
 	if checkpointPVC != "" {
 		container.VolumeMounts = []corev1.VolumeMount{
@@ -103,38 +119,23 @@ func OnAdd(ctx context.Context, kubeClient kubernetes.Interface, u *unstructured
 		}}
 	}
 
-	// 创建 StatefulSet
-	replicas := int32(workers)
+	replicas := workers
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      stsName,
-			Namespace: namespace,
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: stsName, Namespace: namespace},
 		Spec: appsv1.StatefulSetSpec{
-			ServiceName:         name + "-svc",
+			ServiceName:         jobName + "-svc",
 			Replicas:            &replicas,
 			PodManagementPolicy: appsv1.ParallelPodManagement,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"job": name},
-			},
+			Selector:            &metav1.LabelSelector{MatchLabels: map[string]string{"job": jobName}},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"job": name},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					Volumes:    volumes,
-				},
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"job": jobName}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{container}, Volumes: volumes},
 			},
 		},
 	}
 
 	_, err = kubeClient.AppsV1().StatefulSets(namespace).Create(ctx, sts, metav1.CreateOptions{})
-	if err != nil {
-		log.Printf("❌ 创建 StatefulSet 失败: %v\n", err)
-	} else {
-		log.Printf("✅ 创建 StatefulSet: %s (%d workers)\n", stsName, workers)
-	}
+	return err
 }
 
 func joinStrings(ss []string) string {

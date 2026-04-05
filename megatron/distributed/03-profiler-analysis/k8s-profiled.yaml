@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: megatron-prof-svc
+spec:
+  clusterIP: None
+  selector:
+    app: megatron-prof
+  ports:
+  - port: 29500
+    name: torchrun
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: megatron-prof-worker
+spec:
+  serviceName: megatron-prof-svc
+  replicas: 4
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: megatron-prof
+  template:
+    metadata:
+      labels:
+        app: megatron-prof
+    spec:
+      containers:
+      - name: trainer
+        image: megatronacr0404.azurecr.io/megatron-profiled:v2
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        ports:
+        - containerPort: 29500
+        env:
+        - name: MASTER_ADDR
+          value: "megatron-prof-worker-0.megatron-prof-svc"
+        - name: MASTER_PORT
+          value: "29500"
+        - name: WORLD_SIZE
+          value: "4"
+        - name: CHECKPOINT_DIR
+          value: "/shared/checkpoints-profiler"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        - name: profiler-output
+          mountPath: /profiler_output
+        command:
+        - /bin/bash
+        - -c
+        - |
+          export RANK=${POD_NAME##*-}
+          export LOCAL_RANK=0
+          echo "=== Pod ${POD_NAME}: RANK=${RANK} ==="
+          # 清空旧 checkpoint，确保从头训练以采集 profiler 数据
+          if [ "$RANK" = "0" ]; then
+            rm -rf /shared/checkpoints-profiler/*
+            echo "Cleaned old checkpoints"
+          fi
+          for i in $(seq 1 60); do
+            if getent hosts ${MASTER_ADDR} > /dev/null 2>&1; then
+              echo "Master DNS resolved!"
+              break
+            fi
+            sleep 1
+          done
+          sleep 3  # 等 rank 0 清完 checkpoint
+          python dp_profiled_training.py
+      volumes:
+      - name: shared
+        azureFile:
+          secretName: azure-storage-secret
+          shareName: checkpoints
+          readOnly: false
+      - name: profiler-output
+        emptyDir: {}

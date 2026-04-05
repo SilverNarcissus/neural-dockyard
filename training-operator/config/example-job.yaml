@@ -16,7 +16,7 @@
 apiVersion: training.megatron.io/v1
 kind: TrainingJob
 metadata:
-  name: megatron-dp-demo
+  name: distribute-2
 spec:
   # 训练镜像
   image: megatronacr0404.azurecr.io/megatron-hello-world:v3

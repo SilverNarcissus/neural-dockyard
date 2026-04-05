@@ -1,0 +1,40 @@
+# ============================================================
+# Ray 分布式训练 K8s 部署
+# ============================================================
+# 简易模式: 单 Pod 内启动 Ray 本地集群 + 多 worker
+# (生产环境用 KubeRay Operator 部署 RayCluster)
+# ============================================================
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ray-dp-checkpoint
+  labels:
+    app: ray-training
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: ray-training
+    spec:
+      nodeSelector:
+        agentpool: bigpool
+      containers:
+      - name: ray-trainer
+        image: megatronacr0404.azurecr.io/ray-trainer:v2
+        resources:
+          requests:
+            cpu: "1"
+            memory: "3Gi"
+          limits:
+            cpu: "3"
+            memory: "6Gi"
+        env:
+        - name: NUM_WORKERS
+          value: "2"
+        - name: RAY_DEDUP_LOGS
+          value: "0"
+        - name: RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_S
+          value: "180"
+      restartPolicy: Never

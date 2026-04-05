@@ -261,6 +261,7 @@ if __name__ == "__main__":
         ),
         run_config=RunConfig(
             name="ray-dp-checkpoint-demo",
+            storage_path="/shared-storage/ray_results",
             checkpoint_config=CheckpointConfig(
                 num_to_keep=3,  # 最多保留 3 个 checkpoint (自动清理旧的!)
             ),

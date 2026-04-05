@@ -1,0 +1,118 @@
+# ============================================================
+# Ray Cluster + RayJob — 真正的多节点分布式训练
+# ============================================================
+#
+# 架构:
+#   KubeRay Operator 监听 RayCluster CR
+#     → 创建 Head Pod (调度 + GCS)
+#     → 创建 Worker Pods (执行训练)
+#     → Worker 通过网络连接 Head
+#
+#   ┌──────────┐     ┌──────────┐     ┌──────────┐
+#   │ Head Pod │ ←──→│Worker Pod│ ←──→│Worker Pod│
+#   │ 调度+GCS │     │ 训练进程  │     │ 训练进程  │
+#   │ Node 0   │     │ Node 1   │     │ Node 2   │
+#   └──────────┘     └──────────┘     └──────────┘
+#
+# 对比之前的单 Pod 模式:
+#   之前: 1 Pod 内 ray.init() 启动本地集群，worker 是进程
+#   现在: 多 Pod 跨节点，worker 是独立 Pod，通过网络通信
+# ============================================================
+
+---
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: ray-distributed-training
+spec:
+  # 训练入口
+  entrypoint: "python /app/ray_dp_checkpoint.py"
+
+  # 运行时环境变量
+  runtimeEnvYAML: |
+    env_vars:
+      NUM_WORKERS: "3"
+      RAY_DEDUP_LOGS: "0"
+      RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_S: "300"
+
+  # 训练完成后关闭集群 (省钱)
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 120
+
+  # Ray Cluster 规格
+  rayClusterSpec:
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: "0.0.0.0"
+        num-cpus: "0"
+      template:
+        spec:
+          containers:
+          - name: ray-head
+            image: megatronacr0404.azurecr.io/ray-trainer:v4
+            ports:
+            - containerPort: 6379
+              name: gcs
+            - containerPort: 8265
+              name: dashboard
+            - containerPort: 10001
+              name: client
+            env:
+            - name: RAY_memory_usage_threshold
+              value: "0.99"
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "2Gi"
+              limits:
+                cpu: "1"
+                memory: "4Gi"
+            volumeMounts:
+            - name: shared-storage
+              mountPath: /shared-storage
+            readinessProbe:
+              exec:
+                command: ["ray", "status"]
+              initialDelaySeconds: 20
+              periodSeconds: 10
+              timeoutSeconds: 5
+          volumes:
+          - name: shared-storage
+            azureFile:
+              secretName: azure-storage-secret
+              shareName: checkpoints
+              readOnly: false
+
+    workerGroupSpecs:
+    - groupName: workers
+      replicas: 3
+      minReplicas: 3
+      maxReplicas: 3
+      rayStartParams: {}
+      template:
+        spec:
+          containers:
+          - name: ray-worker
+            image: megatronacr0404.azurecr.io/ray-trainer:v4
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "1"
+                memory: "2Gi"
+            volumeMounts:
+            - name: shared-storage
+              mountPath: /shared-storage
+            readinessProbe:
+              exec:
+                command: ["ray", "status"]
+              initialDelaySeconds: 20
+              periodSeconds: 10
+              timeoutSeconds: 5
+          volumes:
+          - name: shared-storage
+            azureFile:
+              secretName: azure-storage-secret
+              shareName: checkpoints
+              readOnly: false
